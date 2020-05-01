@@ -28,10 +28,10 @@ Wiser Data URLS
 WISERHUBURL = "http://{}/data/v2/domain/"
 WISERNETWORKURL = "http://{}/data/v2/network/"
 WISERMODEURL = "http://{}/data/v2/domain/System/RequestOverride"
-WISERSETROOMTEMP = "http://{}//data/v2/domain/Room/{}"
-WISERROOM = "http://{}//data/v2/domain/Room/{}"
+WISERSETROOMTEMP = "http://{}/data/v2/domain/Room/{}"
+WISERROOM = "http://{}/data/v2/domain/Room/{}"
 WISERSCHEDULEURL = "http://{}/data/v2/schedules/Heating/{}"
-WISERSCHEDULEGETURL = "http://{}/data/v2/schedules/"
+WISERSCHEDULEGETURL = "http://{}/data/v2/schedules/Heating/"
 WISERSMARTPLUGURL = "http://{}/data/v2/domain/SmartPlug/{}"
 WISERSMARTPLUGSURL = "http://{}/data/v2/domain/SmartPlug"
 
@@ -39,9 +39,9 @@ TEMP_MINIMUM = 5
 TEMP_MAXIMUM = 30
 TEMP_OFF = -20
 
-TIMEOUT = (1.5, 1.0)
+TIMEOUT = 3.05
 RETRIES = 3
-BACKOFF = 1
+BACKOFF = 0.75
 
 __VERSION__ = "1.0.7.2"
 
@@ -107,7 +107,6 @@ class wiserHub:
         }
         # Dict holding Valve2Room mapping convinience variable
         self.device2roomMap = {}
-        #self.refreshData()  # Issue first refresh in init
 
     def __toWiserTemp(self, temp):
         """
@@ -250,13 +249,8 @@ class wiserHub:
             _LOGGER.debug(" valve2roomMap{} ".format(self.device2roomMap))
         else:
             _LOGGER.warning("Wiser found no rooms")
-        
 
-        # Add v2 Schedule data to v2 Hub data so existing HA component will still work
-        tempData = self.wiserHubData
-        tempData['Schedule'] = self.wiserScheduleData['Heating']
-
-        return tempData
+        return self.wiserHubData
 
     def getHubData(self):
         """
@@ -508,14 +502,14 @@ class wiserHub:
         param roomId:
         return: json data
         """
-        self.checkHubData()
+        #self.makeScheduleDataRequest()
 
         if self.getRoom(roomId) is None:
             raise WiserNotFound("getRoomSchedule for room {} not found ".format(roomId))
 
         scheduleId = self.getRoom(roomId).get("ScheduleId")
         if scheduleId is not None:
-            for schedule in self.wiserHubData.get("Schedule"):
+            for schedule in self.wiserScheduleData:
                 if schedule.get("id") == scheduleId:
                     return schedule
             raise WiserNotFound("getRoomSchedule for room {} not found ".format(roomId))
@@ -745,14 +739,22 @@ class wiserHub:
                 }
             }
         elif mode.lower() == "manual":
-            # When setting to manual , set the temp to the current scheduled temp
-            setTemp = self.__fromWiserTemp(
-                self.getRoom(roomId).get("ScheduledSetPoint")
-            )
+            # Set to manual mode first if currently auto
+            if self.getRoom(roomId).get("Mode") == "Auto":
+                self.setRoomMode(roomId, "auto_to_manual")
+                # If already manual (ie off), set the temp to the current scheduled temp
+                setTemp = self.__fromWiserTemp(
+                    self.getRoom(roomId).get("CurrentSetPoint")
+                )
+            else:
+                # If already manual (ie off), set the temp to the current scheduled temp
+                setTemp = self.__fromWiserTemp(
+                    self.getRoom(roomId).get("ScheduledSetPoint")
+                )
+
             # If current scheduled temp is less than 5C then set to min temp
             setTemp = setTemp if setTemp >= TEMP_MINIMUM else TEMP_MINIMUM
             patchData = {
-                "Mode": "Manual",
                 "RequestOverride": {
                     "Type": "Manual",
                     "SetPoint": self.__toWiserTemp(setTemp),
@@ -760,13 +762,18 @@ class wiserHub:
             }
         # Implement trv off as per https://github.com/asantaga/wiserheatingapi/issues/3
         elif mode.lower() == "off":
+            # Set to manual mode first if currently auto
+            if self.getRoom(roomId).get("Mode") == "Auto":
+                self.setRoomMode(roomId, "auto_to_manual")
+
             patchData = {
-                "Mode": "Manual",
                 "RequestOverride": {
                     "Type": "Manual",
                     "SetPoint": self.__toWiserTemp(TEMP_OFF),
                 },
             }
+        elif mode.lower() == "auto_to_manual":
+            patchData = {"Mode": "Manual"}
         else:
             raise ValueError(
                 "Error setting setting room mode, received  {} but should be auto,boost,off or manual ".format(
